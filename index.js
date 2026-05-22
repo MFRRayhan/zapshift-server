@@ -229,6 +229,87 @@ async function run() {
       res.send({ url: session.url });
     });
 
+    app.patch("/payment-success", async (req, res) => {
+      const sessionId = req.query.session_id;
+      if (!sessionId) {
+        return res.send({
+          success: false,
+          message: "session_id is required",
+        });
+      }
+
+      const session = await stripe.checkout.sessions.retrieve(sessionId);
+      if (!session) {
+        return res.send({
+          success: false,
+          message: "invalid session",
+        });
+      }
+
+      // PAYMENT CHECK
+      if (session.payment_status !== "paid") {
+        return res.send({
+          success: false,
+          message: "payment not complete yet",
+        });
+      }
+
+      const parcelId = session.metadata?.parcelId;
+      if (!parcelId) {
+        return res.send({
+          success: false,
+          message: "parcelId is missing",
+        });
+      }
+
+      const parcelName = session.metadata?.parcelName;
+      const trackingId = generateTrackingId();
+      const query = { _id: new ObjectId(parcelId) };
+      const update = {
+        $set: {
+          trackingId,
+          paymentStatus: "paid",
+          paidAt: new Date(),
+        },
+      };
+
+      // DUPLICATE PAYMENT CHECK
+      const transactionId = session.payment_intent;
+      const paymentExist = await paymentsCollection.findOne({ transactionId });
+
+      if (paymentExist) {
+        return res.send({
+          success: true,
+          message: "Payment already exists",
+          payment: paymentExist,
+        });
+      }
+
+      const parcelResult = await parcelsCollection.updateOne(query, update);
+
+      const payment = {
+        trackingId,
+        transactionId,
+        parcelId,
+        parcelName,
+        amount: session.amount_total / 100,
+        currency: session.currency,
+        customerEmail: session.customer_email,
+        paymentStatus: session.payment_status,
+        paidAt: new Date(),
+      };
+
+      const paymentResult = await paymentsCollection.insertOne(payment);
+
+      return res.send({
+        success: true,
+        message: "Payment successful",
+        payment,
+        parcelResult,
+        paymentResult,
+      });
+    });
+
     // app.patch("/payment-success", async (req, res) => {
     //   const sessionId = req.query.session_id;
     //   const session = await stripe.checkout.sessions.retrieve(sessionId);
@@ -283,98 +364,6 @@ async function run() {
     //     }
     //   }
     // });
-
-    app.patch("/payment-success", async (req, res) => {
-      const sessionId = req.query.session_id;
-
-      if (!sessionId) {
-        return res.send({
-          success: false,
-          message: "session_id is required",
-        });
-      }
-
-      const session = await stripe.checkout.sessions.retrieve(sessionId);
-
-      if (!session) {
-        return res.send({
-          success: false,
-          message: "invalid session",
-        });
-      }
-
-      // CHECK DUPLICATE PAYMENT
-      const transactionId = session.payment_intent;
-      const paymentExist = await paymentsCollection.findOne({ transactionId });
-
-      if (paymentExist) {
-        return res.send({
-          success: true,
-          message: "Payment already processed",
-          transactionId,
-          trackingId: paymentExist.trackingId,
-          amount: paymentExist.amount,
-          customerEmail: paymentExist.customerEmail,
-          parcelName: paymentExist.parcelName,
-        });
-      }
-
-      // PAYMENT NOT COMPLETED CHECK
-      if (session.payment_status !== "paid") {
-        return res.send({
-          success: false,
-          message: "payment not complete yet",
-        });
-      }
-
-      const parcelId = session.metadata?.parcelId;
-      const parcelName = session.metadata?.parcelName;
-
-      if (!parcelId) {
-        return res.send({
-          success: false,
-          message: "parcel id is missing in metadata",
-        });
-      }
-
-      const trackingId = generateTrackingId();
-
-      // UPDATE PARCEL
-      const query = { _id: new ObjectId(parcelId) };
-      const update = {
-        $set: {
-          paymentStatus: "paid",
-          paidAt: new Date(),
-          trackingId,
-        },
-      };
-      const parcelResult = await parcelsCollection.updateOne(query, update);
-
-      const payment = {
-        amount: session.amount_total / 100,
-        currency: session.currency,
-        customerEmail: session.customer_email,
-        parcelId,
-        parcelName,
-        transactionId,
-        paymentStatus: session.payment_status,
-        paidAt: new Date(),
-        trackingId,
-      };
-
-      const paymentResult = await paymentsCollection.insertOne(payment);
-
-      return res.send({
-        success: true,
-        parcelUpdate: parcelResult,
-        // paymentInfo: payment,
-        trackingId,
-        transactionId,
-        amount: payment.amount,
-        customerEmail: payment.customerEmail,
-        parcelName: payment.parcelName,
-      });
-    });
 
     /* ==================================
     PAYMENT API's
