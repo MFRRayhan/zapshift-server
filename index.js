@@ -23,15 +23,35 @@ app.use(express.json());
 /* ==============================
 FIREBASE CONFIG
 ============================== */
-// const serviceAccount = require('./serviceAccountKey.json');
+const serviceAccount = require("./serviceAccountKey.json");
 
-// admin.initializeApp({
-//   credential: admin.credential.cert(serviceAccount),
-// });
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount),
+});
 
 /* ==============================
 CUSTOM MIDDLEWARE
 ============================== */
+const verifyFBToken = async (req, res, next) => {
+  const authHeader = req.headers.authorization;
+  if (!authHeader) {
+    return res.status(401).send({ message: "unauthorized access" });
+  }
+
+  const idToken = authHeader.split(" ")[1];
+  if (!idToken) {
+    return res.status(401).send({ message: "unauthorized access" });
+  }
+
+  try {
+    const userInfo = await admin.auth().verifyIdToken(idToken);
+    req.token_email = userInfo.email;
+    next();
+  } catch (error) {
+    console.error("Firebase toker error:", error);
+    res.status(401).send({ message: "unauthorized access" });
+  }
+};
 
 /* ==================================
 CUSTOM FUNCTION
@@ -119,7 +139,7 @@ async function run() {
       res.send(result);
     });
 
-    app.patch("/users/:id", async (req, res) => {});
+    // app.patch("/users/:id", async (req, res) => {});
 
     app.delete("/users/:id", async (req, res) => {
       const id = req.params.id;
@@ -368,11 +388,16 @@ async function run() {
     /* ==================================
     PAYMENT API's
     ================================== */
-    app.get("/payments", async (req, res) => {
+    app.get("/payments", verifyFBToken, async (req, res) => {
       const query = {};
       const { email } = req.query;
 
-      if (email) query.customerEmail = email;
+      if (email) {
+        query.customerEmail = email;
+        if (email !== req.token_email) {
+          return res.status(403).send({ message: "forbidden access" });
+        }
+      }
 
       const result = await paymentsCollection.find(query).toArray();
       res.send(result);
