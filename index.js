@@ -96,6 +96,7 @@ async function run() {
     const usersCollection = db.collection("users");
     const parcelsCollection = db.collection("parcels");
     const paymentsCollection = db.collection("payments");
+    const ridersCollection = db.collection("riders");
 
     /* ==============================
     ROOT
@@ -151,7 +152,7 @@ async function run() {
     /* ==================================
     Parcels API
     ================================== */
-    app.get("/parcels", async (req, res) => {
+    app.get("/parcels", verifyFBToken, async (req, res) => {
       const query = {};
       const { email } = req.query;
 
@@ -400,6 +401,70 @@ async function run() {
       }
 
       const result = await paymentsCollection.find(query).toArray();
+      res.send(result);
+    });
+
+    /* ==================================
+    RIDER API's
+    ================================== */
+    app.get("/riders", async (req, res) => {
+      const query = {};
+
+      if (req.query?.status) {
+        query.status = req.query?.status;
+      }
+
+      const result = await ridersCollection.find(query).toArray();
+      res.send(result);
+    });
+
+    app.patch("/riders/:id", async (req, res) => {
+      const status = req.body.status;
+      const id = req.params.id;
+      const query = { _id: new ObjectId(id) };
+      const update = {
+        $set: { status },
+      };
+
+      const result = await ridersCollection.updateOne(query, update);
+
+      if (status === "approved") {
+        const email = req.body.email;
+        const query = { userEmail: email };
+        const update = {
+          $set: {
+            role: "rider",
+          },
+        };
+        const userResult = await usersCollection.updateOne(query, update);
+      }
+
+      if (status === "rejected") {
+        const email = req.body.email;
+        const query = { userEmail: email };
+        const update = {
+          $set: {
+            role: "user",
+          },
+        };
+        const userResult = await usersCollection.updateOne(query, update);
+      }
+
+      res.send(result);
+    });
+
+    app.post("/riders", async (req, res) => {
+      const newRider = req.body;
+      newRider.status = "pending";
+      newRider.createdAt = new Date().toISOString();
+      const result = await ridersCollection.insertOne(newRider);
+      res.send(result);
+    });
+
+    app.delete("/riders/:id", async (req, res) => {
+      const id = req.params.id;
+      const query = { _id: new ObjectId(id) };
+      const result = await ridersCollection.deleteOne(query);
       res.send(result);
     });
 
