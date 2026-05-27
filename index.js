@@ -128,6 +128,19 @@ async function run() {
       res.send(result);
     });
 
+    app.patch("/users/:id", async (req, res) => {
+      const role = req.body.role;
+      const id = req.params.id;
+      const query = { _id: new ObjectId(id) };
+      const update = {
+        $set: {
+          role,
+        },
+      };
+      const result = await usersCollection.updateOne(query, update);
+      res.send(result);
+    });
+
     app.post("/users", async (req, res) => {
       const newUser = req.body;
       const { userEmail } = req.body; // userEmail = mongoDB Key
@@ -177,6 +190,19 @@ async function run() {
     });
 
     // update
+    app.patch("/parcels/:id", async (req, res) => {
+      const updateData = req.body;
+      const id = req.params.id;
+      const filter = { _id: new ObjectId(id) };
+      const update = {
+        $set: {
+          receiverEmail: updateData.receiverEmail,
+          receiverPhone: updateData.receiverPhone,
+        },
+      };
+
+      const result = await parcelsCollection.updateOne(filter, update);
+    });
 
     app.delete("/parcels/:id", async (req, res) => {
       const id = req.params.id;
