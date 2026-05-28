@@ -128,6 +128,13 @@ async function run() {
       res.send(result);
     });
 
+    app.get("/users/:email/role", async (req, res) => {
+      const email = req.params.email;
+      const query = { userEmail: email };
+      const user = await usersCollection.findOne(query);
+      res.send(user?.role || "user");
+    });
+
     app.patch("/users/:id", async (req, res) => {
       const role = req.body.role;
       const id = req.params.id;
