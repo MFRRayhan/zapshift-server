@@ -98,6 +98,21 @@ async function run() {
     const paymentsCollection = db.collection("payments");
     const ridersCollection = db.collection("riders");
 
+    /* ==================================
+    VERIFY ADMIN MIDDLEWARE
+    ================================== */
+    const verifyAdmin = async (req, res, next) => {
+      const email = req.token_email;
+      const query = { email };
+      const userResult = await usersCollection.findOne(query);
+
+      if (!userResult || user?.role === "admin") {
+        return res.status(403).send({ message: "forbidden access" });
+      }
+
+      next();
+    };
+
     /* ==============================
     ROOT
     ============================== */
@@ -135,7 +150,7 @@ async function run() {
       res.send(user?.role || "user");
     });
 
-    app.patch("/users/:id", async (req, res) => {
+    app.patch("/users/:id", verifyFBToken, verifyAdmin, async (req, res) => {
       const role = req.body.role;
       const id = req.params.id;
       const query = { _id: new ObjectId(id) };
