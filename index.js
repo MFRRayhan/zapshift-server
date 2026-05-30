@@ -103,10 +103,10 @@ async function run() {
     ================================== */
     const verifyAdmin = async (req, res, next) => {
       const email = req.token_email;
-      const query = { email };
+      const query = { userEmail: email };
       const userResult = await usersCollection.findOne(query);
 
-      if (!userResult || user?.role === "admin") {
+      if (!userResult || userResult?.role !== "admin") {
         return res.status(403).send({ message: "forbidden access" });
       }
 
@@ -124,16 +124,30 @@ async function run() {
     USERS
     ================================== */
     app.get("/users", async (req, res) => {
-      const { email } = req.query;
-      const query = { userEmail: email };
+      try {
+        const { email, search } = req.query;
+        const emailQuery = { userEmail: email };
 
-      if (email) {
-        const user = await usersCollection.findOne(query);
-        return res.send(user);
+        if (email) {
+          const user = await usersCollection.findOne(emailQuery);
+          return res.send(user);
+        }
+
+        const searchQuery = {};
+
+        if (search) {
+          searchQuery.$or = [
+            { displayName: { $regex: search, $options: "i" } },
+            { userEmail: { $regex: search, $options: "i" } },
+          ];
+        }
+
+        const result = await usersCollection.find(searchQuery).toArray();
+        res.send(result);
+      } catch (error) {
+        console.error("Error fetching users", error);
+        res.status(500).send({ message: "internal server error" });
       }
-
-      const result = await usersCollection.find().toArray();
-      res.send(result);
     });
 
     app.get("/users/:id", async (req, res) => {
@@ -189,9 +203,19 @@ async function run() {
     ================================== */
     app.get("/parcels", verifyFBToken, async (req, res) => {
       const query = {};
-      const { email } = req.query;
+      const { email, search } = req.query;
 
       if (email) query.senderEmail = email;
+
+      if (search) {
+        query.$or = [
+          { parcelName: { $regex: search, $options: "i" } },
+          { senderName: { $regex: search, $options: "i" } },
+          { receiverName: { $regex: search, $options: "i" } },
+          { senderEmail: { $regex: search, $options: "i" } },
+          { receiverEmail: { $regex: search, $options: "i" } },
+        ];
+      }
 
       const cursor = parcelsCollection.find(query).sort({ createdAt: -1 });
       const result = await cursor.toArray();
@@ -455,18 +479,42 @@ async function run() {
     /* ==================================
     RIDER API's
     ================================== */
+    // app.get("/riders", async (req, res) => {
+    //   const query = {};
+
+    //   if (req.query?.status) {
+    //     query.status = req.query?.status;
+    //   }
+
+    //   const result = await ridersCollection.find(query).toArray();
+    //   res.send(result);
+    // });
+
     app.get("/riders", async (req, res) => {
-      const query = {};
+      try {
+        const { status, search } = req.query;
+        const query = {};
 
-      if (req.query?.status) {
-        query.status = req.query?.status;
+        if (status) {
+          query.status = status;
+        }
+
+        if (search) {
+          query.$or = [
+            { riderName: { $regex: search, $options: "i" } },
+            { riderEmail: { $regex: search, $options: "i" } },
+          ];
+        }
+
+        const result = await ridersCollection.find(query).toArray();
+        res.send(result);
+      } catch (error) {
+        console.error("Error fetching riders", error);
+        res.status(500).send({ message: "internal server error" });
       }
-
-      const result = await ridersCollection.find(query).toArray();
-      res.send(result);
     });
 
-    app.patch("/riders/:id", async (req, res) => {
+    app.patch("/riders/:id", verifyFBToken, verifyAdmin, async (req, res) => {
       const status = req.body.status;
       const id = req.params.id;
       const query = { _id: new ObjectId(id) };
