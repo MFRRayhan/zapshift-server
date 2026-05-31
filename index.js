@@ -44,8 +44,8 @@ const verifyFBToken = async (req, res, next) => {
   }
 
   try {
-    const userInfo = await admin.auth().verifyIdToken(idToken);
-    req.token_email = userInfo.email;
+    const decoded = await admin.auth().verifyIdToken(idToken);
+    req.user = decoded;
     next();
   } catch (error) {
     console.error("Firebase toker error:", error);
@@ -102,7 +102,7 @@ async function run() {
     VERIFY ADMIN MIDDLEWARE
     ================================== */
     const verifyAdmin = async (req, res, next) => {
-      const email = req.token_email;
+      const email = req.user.email;
       const query = { userEmail: email };
       const userResult = await usersCollection.findOne(query);
 
@@ -125,7 +125,7 @@ async function run() {
     ================================== */
     app.get("/users", async (req, res) => {
       try {
-        const { email, search } = req.query;
+        const { email, search, skip = 0, limit = 0 } = req.query;
         const emailQuery = { userEmail: email };
 
         if (email) {
@@ -142,8 +142,15 @@ async function run() {
           ];
         }
 
-        const result = await usersCollection.find(searchQuery).toArray();
-        res.send(result);
+        const result = await usersCollection
+          .find(searchQuery)
+          .skip(Number(skip))
+          .limit(Number(limit))
+          .toArray();
+
+        const totalUsers = await usersCollection.countDocuments(searchQuery);
+
+        res.send({ users: result, totalUsers });
       } catch (error) {
         console.error("Error fetching users", error);
         res.status(500).send({ message: "internal server error" });
@@ -202,24 +209,36 @@ async function run() {
     Parcels API
     ================================== */
     app.get("/parcels", verifyFBToken, async (req, res) => {
-      const query = {};
-      const { email, search } = req.query;
+      try {
+        const { email, search, limit = 0, skip = 0 } = req.query;
 
-      if (email) query.senderEmail = email;
+        const query = {
+          senderEmail: req.user.email,
+        };
 
-      if (search) {
-        query.$or = [
-          { parcelName: { $regex: search, $options: "i" } },
-          { senderName: { $regex: search, $options: "i" } },
-          { receiverName: { $regex: search, $options: "i" } },
-          { senderEmail: { $regex: search, $options: "i" } },
-          { receiverEmail: { $regex: search, $options: "i" } },
-        ];
+        if (search) {
+          query.$or = [
+            { parcelName: { $regex: search, $options: "i" } },
+            { senderName: { $regex: search, $options: "i" } },
+            { receiverName: { $regex: search, $options: "i" } },
+            { senderEmail: { $regex: search, $options: "i" } },
+            { receiverEmail: { $regex: search, $options: "i" } },
+          ];
+        }
+
+        const cursor = parcelsCollection
+          .find(query)
+          .limit(Number(limit))
+          .skip(Number(skip))
+          .sort({ createdAt: -1 });
+        const result = await cursor.toArray();
+
+        const totalParcels = await parcelsCollection.countDocuments(query);
+        res.send({ parcels: result, totalParcels });
+      } catch (error) {
+        console.error("Error fetching parcels", error);
+        res.status(500).send({ message: "internal server error" });
       }
-
-      const cursor = parcelsCollection.find(query).sort({ createdAt: -1 });
-      const result = await cursor.toArray();
-      res.send(result);
     });
 
     app.get("/parcels/:id", async (req, res) => {
@@ -467,7 +486,7 @@ async function run() {
 
       if (email) {
         query.customerEmail = email;
-        if (email !== req.token_email) {
+        if (email !== req.user.email) {
           return res.status(403).send({ message: "forbidden access" });
         }
       }
@@ -479,20 +498,9 @@ async function run() {
     /* ==================================
     RIDER API's
     ================================== */
-    // app.get("/riders", async (req, res) => {
-    //   const query = {};
-
-    //   if (req.query?.status) {
-    //     query.status = req.query?.status;
-    //   }
-
-    //   const result = await ridersCollection.find(query).toArray();
-    //   res.send(result);
-    // });
-
     app.get("/riders", async (req, res) => {
       try {
-        const { status, search } = req.query;
+        const { status, search, skip = 0, limit = 0 } = req.query;
         const query = {};
 
         if (status) {
@@ -506,8 +514,14 @@ async function run() {
           ];
         }
 
-        const result = await ridersCollection.find(query).toArray();
-        res.send(result);
+        const result = await ridersCollection
+          .find(query)
+          .skip(Number(skip))
+          .limit(Number(limit))
+          .toArray();
+        const totalRiders = await ridersCollection.countDocuments(query);
+
+        res.send({ riders: result, totalRiders });
       } catch (error) {
         console.error("Error fetching riders", error);
         res.status(500).send({ message: "internal server error" });
