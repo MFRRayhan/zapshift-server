@@ -482,7 +482,7 @@ async function run() {
     ================================== */
     app.get("/payments", verifyFBToken, async (req, res) => {
       const query = {};
-      const { email } = req.query;
+      const { email, search, skip = 0, limit = 0 } = req.query;
 
       if (email) {
         query.customerEmail = email;
