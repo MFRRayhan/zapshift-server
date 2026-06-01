@@ -381,6 +381,7 @@ async function run() {
         $set: {
           trackingId,
           paymentStatus: "paid",
+          deliveryStatus: "pending_pickup",
           paidAt: new Date(),
         },
       };
@@ -491,8 +492,24 @@ async function run() {
         }
       }
 
-      const result = await paymentsCollection.find(query).toArray();
-      res.send(result);
+      if (search) {
+        query.$or = [
+          { parcelName: { $regex: search, $options: "i" } },
+          { senderName: { $regex: search, $options: "i" } },
+          { receiverName: { $regex: search, $options: "i" } },
+          { senderEmail: { $regex: search, $options: "i" } },
+          { receiverEmail: { $regex: search, $options: "i" } },
+        ];
+      }
+
+      const result = await paymentsCollection
+        .find(query)
+        .limit(Number(limit))
+        .skip(Number(skip))
+        .toArray();
+      const totalPayments = await paymentsCollection.countDocuments(query);
+
+      res.send({ payments: result, totalPayments });
     });
 
     /* ==================================
