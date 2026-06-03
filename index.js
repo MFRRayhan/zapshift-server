@@ -458,6 +458,7 @@ async function run() {
           .find(query)
           .skip(Number(skip))
           .limit(Number(limit))
+          .sort({ createdAt: -1 })
           .toArray();
         const totalRiders = await ridersCollection.countDocuments(query);
 
@@ -472,9 +473,19 @@ async function run() {
       const status = req.body.status;
       const id = req.params.id;
       const query = { _id: new ObjectId(id) };
-      const update = {
-        $set: { status },
+      let update = {
+        $set: {
+          status,
+        },
       };
+
+      if (status === "approved") {
+        update.$set.workStatus = "available";
+      }
+
+      if (status === "rejected") {
+        update.$set.workStatus = "rejected";
+      }
 
       const result = await ridersCollection.updateOne(query, update);
 
