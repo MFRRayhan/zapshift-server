@@ -440,12 +440,19 @@ async function run() {
     ================================== */
     app.get("/riders", async (req, res) => {
       try {
-        const { status, search, skip = 0, limit = 0 } = req.query;
+        const {
+          status,
+          search,
+          skip = 0,
+          limit = 0,
+          workStatus,
+          district,
+        } = req.query;
         const query = {};
 
-        if (status) {
-          query.status = status;
-        }
+        if (status) query.status = status;
+        if (workStatus) query.workStatus = workStatus;
+        if (district) query.district = district;
 
         if (search) {
           query.$or = [
