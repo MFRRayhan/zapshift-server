@@ -266,19 +266,59 @@ async function run() {
       res.send(result);
     });
 
-    // update
+    // UPDATE PARCEL INFO
     app.patch("/parcels/:id", async (req, res) => {
-      const updateData = req.body;
+      const {
+        receiverName,
+        receiverEmail,
+        receiverPhone,
+        receiverAddress,
+        receiverDistrict,
+        deliveryInstructions,
+      } = req.body;
       const id = req.params.id;
       const filter = { _id: new ObjectId(id) };
       const update = {
         $set: {
-          receiverEmail: updateData.receiverEmail,
-          receiverPhone: updateData.receiverPhone,
+          receiverName,
+          receiverEmail,
+          receiverPhone,
+          receiverAddress,
+          receiverDistrict,
+          deliveryInstructions,
         },
       };
 
       const result = await parcelsCollection.updateOne(filter, update);
+      res.send(result);
+    });
+
+    // UPDATE PARCEL INFO WITH RIDER INFO:
+    app.patch("/parcels/assign-rider/:id", async (req, res) => {
+      const { riderId, riderName, riderEmail, phoneNumber } = req.body;
+      const id = req.params.id;
+      const filter = { _id: new ObjectId(id) };
+      const update = {
+        $set: {
+          riderId,
+          riderName,
+          riderEmail,
+          phoneNumber,
+          deliveryStatus: "driver_assigned",
+        },
+      };
+      const result = await parcelsCollection.updateOne(filter, update);
+      res.send(result);
+
+      const riderQuery = { _id: new ObjectId(riderId) };
+      const updateRider = {
+        $set: { workStatus: "in_delivery" },
+      };
+      const riderResult = await ridersCollection.updateOne(
+        riderQuery,
+        updateRider,
+      );
+      res.send(riderResult);
     });
 
     app.delete("/parcels/:id", async (req, res) => {
