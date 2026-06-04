@@ -205,10 +205,14 @@ async function run() {
       res.send(result);
     });
 
+    /* -------------------------------------------------------------------------- */
+
     /* ==================================
     Parcels API
     ================================== */
-    app.get("/parcels", verifyFBToken, async (req, res) => {
+
+    // FOR USERS
+    app.get("/parcels", async (req, res) => {
       try {
         const {
           email,
@@ -217,6 +221,8 @@ async function run() {
           skip = 0,
           deliveryStatus,
         } = req.query;
+
+        console.log("User Request:", req);
 
         const query = {};
 
@@ -246,6 +252,40 @@ async function run() {
         const result = await cursor.toArray();
 
         const totalParcels = await parcelsCollection.countDocuments(query);
+        res.send({ parcels: result, totalParcels });
+      } catch (error) {
+        console.error("Error fetching parcels", error);
+        res.status(500).send({ message: "internal server error" });
+      }
+    });
+
+    // FOR ADMIN
+    app.get("/admin/parcels", verifyFBToken, verifyAdmin, async (req, res) => {
+      try {
+        const { limit = 0, skip = 0, deliveryStatus, search } = req.query;
+        const query = {};
+
+        if (search) {
+          query.$or = [
+            { parcelName: { $regex: search, $options: "i" } },
+            { senderName: { $regex: search, $options: "i" } },
+            { receiverName: { $regex: search, $options: "i" } },
+            { senderEmail: { $regex: search, $options: "i" } },
+            { receiverEmail: { $regex: search, $options: "i" } },
+          ];
+        }
+
+        if (deliveryStatus) query.deliveryStatus = deliveryStatus;
+
+        const result = await parcelsCollection
+          .find(query)
+          .limit(Number(limit))
+          .skip(Number(skip))
+          .sort({ createdAt: -1 })
+          .toArray();
+
+        const totalParcels = await parcelsCollection.countDocuments(query);
+
         res.send({ parcels: result, totalParcels });
       } catch (error) {
         console.error("Error fetching parcels", error);
@@ -327,6 +367,8 @@ async function run() {
       const result = await parcelsCollection.deleteOne(query);
       res.send(result);
     });
+
+    /* -------------------------------------------------------------------------- */
 
     /* ==================================
     Stripe Payment Api
@@ -440,9 +482,13 @@ async function run() {
       }
     });
 
+    /* -------------------------------------------------------------------------- */
+
     /* ==================================
     PAYMENT API's
     ================================== */
+
+    // FOR USERS
     app.get("/payments", verifyFBToken, async (req, res) => {
       const query = {};
       const { email, search, skip = 0, limit = 0 } = req.query;
@@ -474,6 +520,39 @@ async function run() {
 
       res.send({ payments: result, totalPayments });
     });
+
+    // FOR ADMIN
+    app.get("/admin/payments", verifyFBToken, verifyAdmin, async (req, res) => {
+      try {
+        const { skip = 0, limit = 0, search = "" } = req.query;
+        const query = {};
+
+        if (search) {
+          query.$or = [
+            { parcelName: { $regex: search, $options: "i" } },
+            { senderName: { $regex: search, $options: "i" } },
+            { receiverName: { $regex: search, $options: "i" } },
+            { senderEmail: { $regex: search, $options: "i" } },
+            { receiverEmail: { $regex: search, $options: "i" } },
+          ];
+        }
+
+        const result = await paymentsCollection
+          .find(query)
+          .limit(Number(limit))
+          .skip(Number(skip))
+          .sort({ paidAt: -1 })
+          .toArray();
+        const totalPayments = await paymentsCollection.countDocuments(query);
+
+        res.send({ payments: result, totalPayments });
+      } catch (error) {
+        console.error("Error fetching payments", error);
+        res.status(500).send({ message: "internal server error" });
+      }
+    });
+
+    /* -------------------------------------------------------------------------- */
 
     /* ==================================
     RIDER API's
