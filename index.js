@@ -293,6 +293,17 @@ async function run() {
       }
     });
 
+    app.get("/parcels/rider", async (req, res) => {
+      const { riderEmail, deliveryStatus } = req.query;
+      const query = {};
+
+      if (riderEmail) query.riderEmail = riderEmail;
+      if (deliveryStatus) query.deliveryStatus = deliveryStatus;
+
+      const result = await parcelsCollection.find(query).toArray();
+      res.send(result);
+    });
+
     app.get("/parcels/:id", async (req, res) => {
       const id = req.params.id;
       const query = { _id: new ObjectId(id) };
@@ -305,6 +316,17 @@ async function run() {
       const result = await parcelsCollection.insertOne(newParcel);
       res.send(result);
     });
+
+    // app.patch("/parcels/:id/status", async (req, res) => {
+    //   const { deliveryStatus } = req.body;
+    //   const id = req.params.id;
+    //   const filter = { _id: new ObjectId(id) };
+    //   const update = {
+    //     $set:{
+    //       deliveryStatus:''
+    //     }
+    //   }
+    // });
 
     // UPDATE PARCEL INFO
     app.patch("/parcels/:id", async (req, res) => {
