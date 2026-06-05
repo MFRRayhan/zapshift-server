@@ -222,8 +222,6 @@ async function run() {
           deliveryStatus,
         } = req.query;
 
-        console.log("User Request:", req);
-
         const query = {};
 
         if (email) {
@@ -294,14 +292,22 @@ async function run() {
     });
 
     app.get("/parcels/rider", async (req, res) => {
-      const { riderEmail, deliveryStatus } = req.query;
+      const {
+        riderEmail,
+        deliveryStatus,
+        limit = 0,
+        skip = 0,
+        search = "",
+      } = req.query;
       const query = {};
 
       if (riderEmail) query.riderEmail = riderEmail;
       if (deliveryStatus) query.deliveryStatus = deliveryStatus;
 
       const result = await parcelsCollection.find(query).toArray();
-      res.send(result);
+      const totalAssingedDeliveries =
+        await parcelsCollection.countDocuments(query);
+      res.send({ parcels: result, totalAssingedDeliveries });
     });
 
     app.get("/parcels/:id", async (req, res) => {
@@ -317,16 +323,18 @@ async function run() {
       res.send(result);
     });
 
-    // app.patch("/parcels/:id/status", async (req, res) => {
-    //   const { deliveryStatus } = req.body;
-    //   const id = req.params.id;
-    //   const filter = { _id: new ObjectId(id) };
-    //   const update = {
-    //     $set:{
-    //       deliveryStatus:''
-    //     }
-    //   }
-    // });
+    app.patch("/parcels/:id/status", async (req, res) => {
+      const { deliveryStatus } = req.body;
+      const id = req.params.id;
+      const filter = { _id: new ObjectId(id) };
+      const update = {
+        $set: {
+          deliveryStatus,
+        },
+      };
+      const result = await parcelsCollection.updateOne(filter, update);
+      res.send(result);
+    });
 
     // UPDATE PARCEL INFO
     app.patch("/parcels/:id", async (req, res) => {
