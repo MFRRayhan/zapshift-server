@@ -292,22 +292,59 @@ async function run() {
     });
 
     app.get("/parcels/rider", async (req, res) => {
-      const {
-        riderEmail,
-        deliveryStatus,
-        limit = 0,
-        skip = 0,
-        search = "",
-      } = req.query;
-      const query = {};
+      try {
+        const {
+          riderEmail,
+          deliveryStatus,
+          limit = 20,
+          skip = 0,
+          search = "",
+        } = req.query;
 
-      if (riderEmail) query.riderEmail = riderEmail;
-      if (deliveryStatus) query.deliveryStatus = deliveryStatus;
+        const query = {};
 
-      const result = await parcelsCollection.find(query).toArray();
-      const totalAssingedDeliveries =
-        await parcelsCollection.countDocuments(query);
-      res.send({ parcels: result, totalAssingedDeliveries });
+        // rider filter
+        if (riderEmail) {
+          query.riderEmail = riderEmail;
+        }
+
+        // status filter (proper dynamic)
+        if (deliveryStatus) {
+          query.deliveryStatus = {
+            $in: [
+              "driver_assigned",
+              "rider_accepted",
+              "picked_up",
+              "in_transit",
+              "delivered",
+            ],
+          };
+        }
+
+        // search filter (parcelName or receiverName)
+        if (search) {
+          query.$or = [
+            { parcelName: { $regex: search, $options: "i" } },
+            { receiverName: { $regex: search, $options: "i" } },
+          ];
+        }
+
+        const result = await parcelsCollection
+          .find(query)
+          .skip(parseInt(skip))
+          .limit(parseInt(limit))
+          .toArray();
+
+        const totalAssingedDeliveries =
+          await parcelsCollection.countDocuments(query);
+
+        res.send({
+          parcels: result,
+          totalAssingedDeliveries,
+        });
+      } catch (error) {
+        res.status(500).send({ message: "Server error", error });
+      }
     });
 
     app.get("/parcels/:id", async (req, res) => {
@@ -324,7 +361,7 @@ async function run() {
     });
 
     app.patch("/parcels/:id/status", async (req, res) => {
-      const { deliveryStatus } = req.body;
+      const { deliveryStatus, riderId } = req.body;
       const id = req.params.id;
       const filter = { _id: new ObjectId(id) };
       const update = {
@@ -332,6 +369,28 @@ async function run() {
           deliveryStatus,
         },
       };
+
+      if (deliveryStatus === "driver_rejected") {
+        const filter = { _id: new ObjectId(riderId) };
+        const update = {
+          $set: {
+            deliveryStatus: "pending_pickup",
+            workStatus: "available",
+          },
+        };
+        const result = await ridersCollection.updateOne(filter, update);
+      }
+
+      if (deliveryStatus === "delivered") {
+        const filter = { _id: new ObjectId(riderId) };
+        const update = {
+          $set: {
+            workStatus: "available",
+          },
+        };
+        const result = await ridersCollection.updateOne(filter, update);
+      }
+
       const result = await parcelsCollection.updateOne(filter, update);
       res.send(result);
     });
