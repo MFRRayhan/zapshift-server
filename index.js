@@ -321,11 +321,13 @@ async function run() {
           };
         }
 
-        // search filter (parcelName or receiverName)
+        // search filter
         if (search) {
           query.$or = [
             { parcelName: { $regex: search, $options: "i" } },
             { receiverName: { $regex: search, $options: "i" } },
+            { senderDistrict: { $regex: search, $options: "i" } },
+            { receiverDistrict: { $regex: search, $options: "i" } },
           ];
         }
 
@@ -335,12 +337,12 @@ async function run() {
           .limit(parseInt(limit))
           .toArray();
 
-        const totalAssingedDeliveries =
+        const totalAssignedDeliveries =
           await parcelsCollection.countDocuments(query);
 
         res.send({
           parcels: result,
-          totalAssingedDeliveries,
+          totalAssignedDeliveries,
         });
       } catch (error) {
         res.status(500).send({ message: "Server error", error });
