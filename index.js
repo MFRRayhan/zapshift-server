@@ -97,20 +97,40 @@ async function run() {
     const parcelsCollection = db.collection("parcels");
     const paymentsCollection = db.collection("payments");
     const ridersCollection = db.collection("riders");
+    const trackingsCollection = db.collection("trackings");
 
     /* ==================================
     VERIFY ADMIN MIDDLEWARE
     ================================== */
     const verifyAdmin = async (req, res, next) => {
-      const email = req.user.email;
-      const query = { userEmail: email };
-      const userResult = await usersCollection.findOne(query);
+      try {
+        const email = req.user.email;
+        const query = { userEmail: email };
+        const userResult = await usersCollection.findOne(query);
 
-      if (!userResult || userResult?.role !== "admin") {
-        return res.status(403).send({ message: "forbidden access" });
+        if (!userResult || userResult?.role !== "admin") {
+          return res.status(403).send({ message: "forbidden access" });
+        }
+
+        next();
+      } catch (error) {
+        console.error(error);
       }
+    };
 
-      next();
+    /* ==================================
+    LOG TRACKING
+    ================================== */
+    const logTracking = async (trackingId, status) => {
+      const log = {
+        trackingId,
+        status,
+        details: status.split("_").join(" "),
+        createdAt: new Date(),
+      };
+
+      const result = await trackingsCollection.insertOne(log);
+      return result;
     };
 
     /* ==============================
@@ -363,7 +383,7 @@ async function run() {
     });
 
     app.patch("/parcels/:id/status", async (req, res) => {
-      const { deliveryStatus, riderId } = req.body;
+      const { deliveryStatus, riderId, trackingId } = req.body;
       const id = req.params.id;
       const filter = { _id: new ObjectId(id) };
       const update = {
@@ -393,6 +413,8 @@ async function run() {
         };
         const result = await ridersCollection.updateOne(filter, update);
       }
+
+      logTracking(trackingId, deliveryStatus);
 
       const result = await parcelsCollection.updateOne(filter, update);
       res.send(result);
@@ -428,7 +450,8 @@ async function run() {
     // UPDATE PARCEL INFO WITH RIDER INFO:
     app.patch("/parcels/assign-rider/:id", async (req, res) => {
       try {
-        const { riderId, riderName, riderEmail, phoneNumber } = req.body;
+        const { riderId, riderName, riderEmail, phoneNumber, trackingId } =
+          req.body;
         const id = req.params.id;
 
         const filter = { _id: new ObjectId(id) };
@@ -455,6 +478,8 @@ async function run() {
           riderQuery,
           updateRider,
         );
+
+        logTracking(trackingId, "driver_assigned");
 
         return res.send({
           parcelResult,
@@ -572,6 +597,8 @@ async function run() {
           },
         };
         const parcelResult = await parcelsCollection.updateOne(query, update);
+
+        logTracking(trackingId, "pending_pickup");
 
         return res.send({
           success: true,
