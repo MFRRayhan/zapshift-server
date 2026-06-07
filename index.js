@@ -378,8 +378,26 @@ async function run() {
 
     app.post("/parcels", async (req, res) => {
       const newParcel = req.body;
+
+      const trackingId = generateTrackingId();
+
+      newParcel.trackingId = trackingId;
+      newParcel.deliveryStatus = "parcel_created";
+
       const result = await parcelsCollection.insertOne(newParcel);
-      res.send(result);
+
+      await trackingsCollection.insertOne({
+        trackingId,
+        status: "parcel_created",
+        details: "Parcel created",
+        createdAt: new Date(),
+      });
+
+      res.send({
+        success: true,
+        trackingId,
+        result,
+      });
     });
 
     app.patch("/parcels/:id/status", async (req, res) => {
@@ -523,6 +541,7 @@ async function run() {
         metadata: {
           parcelId: paymentInfo.parcelId,
           parcelName: paymentInfo.parcelName,
+          trackingId: paymentInfo.trackingId,
         },
         customer_email: paymentInfo.senderEmail,
         mode: "payment",
@@ -571,7 +590,7 @@ async function run() {
         }
 
         const parcelName = session.metadata?.parcelName;
-        const trackingId = generateTrackingId();
+        const trackingId = session.metadata?.trackingId;
 
         const payment = {
           trackingId,
