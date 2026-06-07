@@ -786,6 +786,43 @@ async function run() {
       res.send(result);
     });
 
+    /* ==================================
+    PARCEL TRACKING API
+    ================================== */
+    app.get("/parcel-track/:trackingId", async (req, res) => {
+      try {
+        const { trackingId } = req.params;
+
+        const parcel = await parcelsCollection.findOne({
+          trackingId,
+        });
+
+        if (!parcel) {
+          return res.status(404).send({
+            success: false,
+            message: "Parcel not found",
+          });
+        }
+
+        const history = await trackingsCollection
+          .find({ trackingId })
+          .sort({ createdAt: 1 })
+          .toArray();
+
+        res.send({
+          success: true,
+          parcel,
+          history,
+        });
+      } catch (error) {
+        console.error(error);
+        res.status(500).send({
+          success: false,
+          message: "Server error",
+        });
+      }
+    });
+
     /* ==============================
     404 HANDLER
     ============================== */
