@@ -240,6 +240,7 @@ async function run() {
           limit = 0,
           skip = 0,
           deliveryStatus,
+          trackingId,
         } = req.query;
 
         const query = {};
@@ -260,6 +261,10 @@ async function run() {
 
         if (deliveryStatus) {
           query.deliveryStatus = deliveryStatus;
+        }
+
+        if (trackingId) {
+          query.trackingId = trackingId;
         }
 
         const cursor = parcelsCollection
