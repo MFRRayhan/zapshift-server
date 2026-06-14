@@ -204,6 +204,27 @@ async function run() {
       res.send(result);
     });
 
+    app.patch("/users/profile/:id", verifyFBToken, async (req, res) => {
+      const { displayName, photoURL } = req.body;
+
+      const id = req.params.id;
+
+      const query = {
+        _id: new ObjectId(id),
+      };
+
+      const updateDoc = {
+        $set: {
+          displayName,
+          photoURL,
+        },
+      };
+
+      const result = await usersCollection.updateOne(query, updateDoc);
+
+      res.send(result);
+    });
+
     app.post("/users", async (req, res) => {
       const newUser = req.body;
       const { userEmail } = req.body; // userEmail = mongoDB Key
