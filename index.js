@@ -549,8 +549,8 @@ async function run() {
 
     // NEW STRIPE API
     app.post("/create-checkout-session", async (req, res) => {
-      const paymentInfo = req.body;
-      const amount = parseInt(paymentInfo.cost) * 100;
+      const parcelInfo = req.body;
+      const amount = parseInt(parcelInfo.cost) * 100;
       const session = await stripe.checkout.sessions.create({
         line_items: [
           {
@@ -558,18 +558,18 @@ async function run() {
               currency: "BDT",
               unit_amount: amount,
               product_data: {
-                name: paymentInfo.parcelName,
+                name: parcelInfo.parcelName,
               },
             },
             quantity: 1,
           },
         ],
         metadata: {
-          parcelId: paymentInfo.parcelId,
-          parcelName: paymentInfo.parcelName,
-          trackingId: paymentInfo.trackingId,
+          parcelId: parcelInfo.parcelId,
+          parcelName: parcelInfo.parcelName,
+          trackingId: parcelInfo.trackingId,
         },
-        customer_email: paymentInfo.senderEmail,
+        customer_email: parcelInfo.senderEmail,
         mode: "payment",
         success_url: `${process.env.SITE_DOMAIN}/dashboard/payment-success?session_id={CHECKOUT_SESSION_ID}`,
         cancel_url: `${process.env.SITE_DOMAIN}/dashboard/payment-cancel`,
