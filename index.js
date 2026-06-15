@@ -354,7 +354,6 @@ async function run() {
           query.riderEmail = riderEmail;
         }
 
-        // status filter (proper dynamic)
         if (deliveryStatus) {
           query.deliveryStatus = {
             $in: [
@@ -389,6 +388,57 @@ async function run() {
         res.send({
           parcels: result,
           totalAssignedDeliveries,
+        });
+      } catch (error) {
+        res.status(500).send({ message: "Server error", error });
+      }
+    });
+
+    app.get("/parcels/rider/completed-deliveries", async (req, res) => {
+      try {
+        const {
+          riderEmail,
+          deliveryStatus,
+          limit = 20,
+          skip = 0,
+          search = "",
+        } = req.query;
+
+        const query = {};
+
+        // rider filter
+        if (riderEmail) {
+          query.riderEmail = riderEmail;
+        }
+
+        if (deliveryStatus) {
+          query.deliveryStatus = {
+            $in: ["delivered"],
+          };
+        }
+
+        // search filter
+        if (search) {
+          query.$or = [
+            { parcelName: { $regex: search, $options: "i" } },
+            { receiverName: { $regex: search, $options: "i" } },
+            { senderDistrict: { $regex: search, $options: "i" } },
+            { receiverDistrict: { $regex: search, $options: "i" } },
+          ];
+        }
+
+        const result = await parcelsCollection
+          .find(query)
+          .skip(parseInt(skip))
+          .limit(parseInt(limit))
+          .toArray();
+
+        const totalCompletedDeliveries =
+          await parcelsCollection.countDocuments(query);
+
+        res.send({
+          parcels: result,
+          totalCompletedDeliveries,
         });
       } catch (error) {
         res.status(500).send({ message: "Server error", error });
@@ -627,6 +677,7 @@ async function run() {
           parcelId: parcelInfo.parcelId,
           parcelName: parcelInfo.parcelName,
           trackingId: parcelInfo.trackingId,
+          senderName: parcelInfo.senderName,
         },
         customer_email: parcelInfo.senderEmail,
         mode: "payment",
@@ -684,7 +735,7 @@ async function run() {
           parcelName,
           amount: session.amount_total / 100,
           currency: session.currency,
-          customerEmail: session.customer_email,
+          senderEmail: session.customer_email,
           paymentStatus: session.payment_status,
           paidAt: new Date(),
         };
@@ -729,7 +780,7 @@ async function run() {
       const { email, search, skip = 0, limit = 0 } = req.query;
 
       if (email) {
-        query.customerEmail = email;
+        query.senderEmail = email;
         if (email !== req.user.email) {
           return res.status(403).send({ message: "forbidden access" });
         }
