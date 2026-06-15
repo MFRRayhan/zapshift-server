@@ -534,6 +534,65 @@ async function run() {
       }
     });
 
+    // RIDER REQUEST FOR PAYOUT
+    app.patch("/parcels/:id/request-payout", async (req, res) => {
+      const { payoutAmount } = req.body;
+      const id = req.params.id;
+      const filter = { _id: new ObjectId(id) };
+      const update = {
+        $set: {
+          payoutAmount,
+          payoutStatus: "paid",
+          payoutRequestedAt: new Date(),
+        },
+      };
+      const result = await parcelsCollection.updateOne(filter, update);
+
+      res.send(result);
+    });
+
+    app.get("/rider-payments", async (req, res) => {
+      try {
+        const { riderEmail, search = "", skip = 0, limit = 20 } = req.query;
+
+        const query = {
+          riderEmail,
+          payoutStatus: { $exists: true },
+        };
+
+        // SEARCH LOGIC
+        if (search) {
+          query.$or = [
+            { parcelName: { $regex: search, $options: "i" } },
+            { trackingId: { $regex: search, $options: "i" } },
+            { receiverName: { $regex: search, $options: "i" } },
+          ];
+        }
+
+        const skipNumber = parseInt(skip);
+        const limitNumber = parseInt(limit);
+
+        // DATA QUERY (PAGINATION APPLIED)
+        const parcels = await parcelsCollection
+          .find(query)
+          .sort({ payoutRequestedAt: -1 })
+          .skip(skipNumber)
+          .limit(limitNumber)
+          .toArray();
+
+        // TOTAL COUNT (for pagination)
+        const totalPayments = await parcelsCollection.countDocuments(query);
+
+        res.send({
+          parcels,
+          totalPayments,
+        });
+      } catch (error) {
+        console.error(error);
+        res.status(500).send({ message: "Server error" });
+      }
+    });
+
     app.delete("/parcels/:id", async (req, res) => {
       const id = req.params.id;
       const query = { _id: new ObjectId(id) };
