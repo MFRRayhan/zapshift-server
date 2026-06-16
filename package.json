@@ -1,10 +1,24 @@
 {
+  "name": "zapshift-backend",
+  "version": "1.0.0",
+  "description": "ZapShift parcel delivery backend API",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "nodemon index.js"
+  },
+  "engines": {
+    "node": ">=18.x"
+  },
   "dependencies": {
-    "cors": "^2.8.6",
-    "dotenv": "^17.4.2",
-    "express": "^5.2.1",
-    "firebase-admin": "^13.9.0",
-    "mongodb": "^7.2.0",
-    "stripe": "^22.1.1"
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.2",
+    "firebase-admin": "^12.7.0",
+    "mongodb": "^6.12.0",
+    "stripe": "^17.7.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.9"
   }
 }

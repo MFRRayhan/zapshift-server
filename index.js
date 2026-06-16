@@ -4,8 +4,6 @@ CORE IMPORTS
 const express = require("express");
 const cors = require("cors");
 require("dotenv").config();
-const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
-const admin = require("firebase-admin");
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 
 /* ==============================
@@ -17,22 +15,84 @@ const port = process.env.PORT || 4000;
 /* ==============================
 GLOBAL MIDDLEWARE
 ============================== */
+// API-only backend: allow all origins.
+// If you need to restrict origins, set them explicitly.
 app.use(cors());
 app.use(express.json());
 
-/* ==============================
-FIREBASE CONFIG
-============================== */
-const serviceAccount = require("./serviceAccountKey.json");
+// Respond to OPTIONS preflight requests for all routes
+app.options("*", cors());
 
-admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount),
+/* ==============================
+ROOT HEALTH CHECK
+Defined synchronously — always available even if DB fails.
+============================== */
+app.get("/", (req, res) => {
+  res.status(200).json({
+    status: "ok",
+    message: "ZapShift API is running 🚀",
+    version: "1.0.0",
+    timestamp: new Date().toISOString(),
+    endpoints: ["/users", "/parcels", "/riders", "/payments", "/parcel-track/:id"],
+  });
 });
+
+// Secondary health-check used by monitoring tools
+app.get("/health", (req, res) => {
+  res.status(200).json({ status: "ok", uptime: process.uptime() });
+});
+
+/* ==============================
+STRIPE INIT (lazy — avoids crash if key is missing)
+============================== */
+let stripe;
+try {
+  if (process.env.STRIPE_SECRET_KEY) {
+    stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
+  } else {
+    console.warn("⚠️  STRIPE_SECRET_KEY is not set. Payment routes will fail.");
+  }
+} catch (err) {
+  console.error("❌ Stripe initialization failed:", err.message);
+}
+
+/* ==============================
+FIREBASE ADMIN INIT (lazy — avoids crash if env var is missing)
+============================== */
+const admin = require("firebase-admin");
+
+let firebaseInitialized = false;
+try {
+  if (process.env.FB_SERVICE_KEY) {
+    const decoded = Buffer.from(process.env.FB_SERVICE_KEY, "base64").toString(
+      "utf8",
+    );
+    const serviceAccount = JSON.parse(decoded);
+
+    if (!admin.apps.length) {
+      admin.initializeApp({
+        credential: admin.credential.cert(serviceAccount),
+      });
+    }
+    firebaseInitialized = true;
+  } else {
+    console.warn(
+      "⚠️  FB_SERVICE_KEY is not set. Auth middleware will be unavailable.",
+    );
+  }
+} catch (err) {
+  console.error("❌ Firebase Admin initialization failed:", err.message);
+}
 
 /* ==============================
 CUSTOM MIDDLEWARE
 ============================== */
 const verifyFBToken = async (req, res, next) => {
+  if (!firebaseInitialized) {
+    console.error("Firebase is not initialized. Cannot verify token.");
+    return res.status(500).send({ message: "Auth service unavailable" });
+  }
+
   const authHeader = req.headers.authorization;
   if (!authHeader) {
     return res.status(401).send({ message: "unauthorized access" });
@@ -44,11 +104,11 @@ const verifyFBToken = async (req, res, next) => {
   }
 
   try {
-    const decoded = await admin.auth().verifyIdToken(idToken);
-    req.user = decoded;
+    const decodedToken = await admin.auth().verifyIdToken(idToken);
+    req.user = decodedToken;
     next();
   } catch (error) {
-    console.error("Firebase toker error:", error);
+    console.error("Firebase token error:", error.message);
     res.status(401).send({ message: "unauthorized access" });
   }
 };
@@ -58,37 +118,59 @@ CUSTOM FUNCTION
 ================================== */
 const generateTrackingId = () => {
   const prefix = "ZAP";
-
   const timestamp = Date.now().toString(36);
   const random = Math.random().toString(36).substring(2, 6).toUpperCase();
-
   return `${prefix}-${timestamp}-${random}`;
 };
 
 /* ==============================
-DATABASE CONFIG
+DATABASE CONFIG (with connection caching for serverless)
 ============================== */
 const uri = process.env.DB_URI;
 
-const client = new MongoClient(uri, {
-  serverApi: {
-    version: ServerApiVersion.v1,
-    strict: true,
-    deprecationErrors: true,
-  },
-});
+let cachedClient = null;
+let cachedDb = null;
+
+async function connectToDatabase() {
+  // Return cached connection if available (critical for serverless cold-start performance)
+  if (cachedClient && cachedDb) {
+    return { client: cachedClient, db: cachedDb };
+  }
+
+  if (!uri) {
+    throw new Error("DB_URI environment variable is not set.");
+  }
+
+  const client = new MongoClient(uri, {
+    serverApi: {
+      version: ServerApiVersion.v1,
+      strict: true,
+      deprecationErrors: true,
+    },
+    // Serverless-friendly connection pool settings
+    maxPoolSize: 1,
+    minPoolSize: 0,
+    maxIdleTimeMS: 10000,
+    serverSelectionTimeoutMS: 10000,
+    connectTimeoutMS: 10000,
+    socketTimeoutMS: 45000,
+  });
+
+  await client.connect();
+
+  cachedClient = client;
+  cachedDb = client.db("zapShitDB");
+
+  console.log("✅ MongoDB connected successfully");
+  return { client: cachedClient, db: cachedDb };
+}
 
 /* ==============================
 ROUTES + DB CONNECTION
 ============================== */
 async function run() {
   try {
-    await client.connect();
-
-    /* ==============================
-    DATABASE
-    ============================== */
-    const db = client.db("zapShitDB");
+    const { db } = await connectToDatabase();
 
     /* ==============================
     COLLECTIONS
@@ -114,7 +196,8 @@ async function run() {
 
         next();
       } catch (error) {
-        console.error(error);
+        console.error("verifyAdmin error:", error.message);
+        res.status(500).send({ message: "internal server error" });
       }
     };
 
@@ -122,23 +205,18 @@ async function run() {
     LOG TRACKING
     ================================== */
     const logTracking = async (trackingId, status) => {
-      const log = {
-        trackingId,
-        status,
-        details: status.split("_").join(" "),
-        createdAt: new Date(),
-      };
-
-      const result = await trackingsCollection.insertOne(log);
-      return result;
+      try {
+        const log = {
+          trackingId,
+          status,
+          details: status.split("_").join(" "),
+          createdAt: new Date(),
+        };
+        return await trackingsCollection.insertOne(log);
+      } catch (err) {
+        console.error("logTracking error:", err.message);
+      }
     };
-
-    /* ==============================
-    ROOT
-    ============================== */
-    app.get("/", (req, res) => {
-      res.json({ status: "Ok", message: "Server is running" });
-    });
 
     /* ==================================
     USERS
@@ -172,78 +250,90 @@ async function run() {
 
         res.send({ users: result, totalUsers });
       } catch (error) {
-        console.error("Error fetching users", error);
+        console.error("Error fetching users:", error.message);
         res.status(500).send({ message: "internal server error" });
       }
     });
 
     app.get("/users/:id", async (req, res) => {
-      const id = req.params.id;
-      const query = { _id: new ObjectId(id) };
-      const result = await usersCollection.findOne(query);
-      res.send(result);
+      try {
+        const id = req.params.id;
+        const query = { _id: new ObjectId(id) };
+        const result = await usersCollection.findOne(query);
+        res.send(result);
+      } catch (error) {
+        console.error("Error fetching user by id:", error.message);
+        res.status(500).send({ message: "internal server error" });
+      }
     });
 
     app.get("/users/:email/role", async (req, res) => {
-      const email = req.params.email;
-      const query = { userEmail: email };
-      const user = await usersCollection.findOne(query);
-      res.send(user?.role || "user");
+      try {
+        const email = req.params.email;
+        const query = { userEmail: email };
+        const user = await usersCollection.findOne(query);
+        res.send(user?.role || "user");
+      } catch (error) {
+        console.error("Error fetching user role:", error.message);
+        res.status(500).send({ message: "internal server error" });
+      }
     });
 
     app.patch("/users/:id", verifyFBToken, verifyAdmin, async (req, res) => {
-      const role = req.body.role;
-      const id = req.params.id;
-      const query = { _id: new ObjectId(id) };
-      const update = {
-        $set: {
-          role,
-        },
-      };
-      const result = await usersCollection.updateOne(query, update);
-      res.send(result);
+      try {
+        const role = req.body.role;
+        const id = req.params.id;
+        const query = { _id: new ObjectId(id) };
+        const update = { $set: { role } };
+        const result = await usersCollection.updateOne(query, update);
+        res.send(result);
+      } catch (error) {
+        console.error("Error updating user role:", error.message);
+        res.status(500).send({ message: "internal server error" });
+      }
     });
 
     app.patch("/users/profile/:id", verifyFBToken, async (req, res) => {
-      const { displayName, photoURL } = req.body;
-
-      const id = req.params.id;
-
-      const query = {
-        _id: new ObjectId(id),
-      };
-
-      const updateDoc = {
-        $set: {
-          displayName,
-          photoURL,
-        },
-      };
-
-      const result = await usersCollection.updateOne(query, updateDoc);
-
-      res.send(result);
+      try {
+        const { displayName, photoURL } = req.body;
+        const id = req.params.id;
+        const query = { _id: new ObjectId(id) };
+        const updateDoc = { $set: { displayName, photoURL } };
+        const result = await usersCollection.updateOne(query, updateDoc);
+        res.send(result);
+      } catch (error) {
+        console.error("Error updating user profile:", error.message);
+        res.status(500).send({ message: "internal server error" });
+      }
     });
 
     app.post("/users", async (req, res) => {
-      const newUser = req.body;
-      const { userEmail } = req.body; // userEmail = mongoDB Key
-      const query = { userEmail };
-      const existingUser = await usersCollection.findOne(query);
+      try {
+        const newUser = req.body;
+        const { userEmail } = req.body;
+        const query = { userEmail };
+        const existingUser = await usersCollection.findOne(query);
 
-      if (existingUser) return res.send({ message: "User already exist" });
+        if (existingUser) return res.send({ message: "User already exist" });
 
-      const result = await usersCollection.insertOne(newUser);
-      res.send(result);
+        const result = await usersCollection.insertOne(newUser);
+        res.send(result);
+      } catch (error) {
+        console.error("Error creating user:", error.message);
+        res.status(500).send({ message: "internal server error" });
+      }
     });
 
-    // app.patch("/users/:id", async (req, res) => {});
-
     app.delete("/users/:id", async (req, res) => {
-      const id = req.params.id;
-      const query = { _id: new ObjectId(id) };
-      const result = await usersCollection.deleteOne(query);
-      res.send(result);
+      try {
+        const id = req.params.id;
+        const query = { _id: new ObjectId(id) };
+        const result = await usersCollection.deleteOne(query);
+        res.send(result);
+      } catch (error) {
+        console.error("Error deleting user:", error.message);
+        res.status(500).send({ message: "internal server error" });
+      }
     });
 
     /* -------------------------------------------------------------------------- */
@@ -266,9 +356,7 @@ async function run() {
 
         const query = {};
 
-        if (email) {
-          query.senderEmail = email;
-        }
+        if (email) query.senderEmail = email;
 
         if (search) {
           query.$or = [
@@ -280,13 +368,8 @@ async function run() {
           ];
         }
 
-        if (deliveryStatus) {
-          query.deliveryStatus = deliveryStatus;
-        }
-
-        if (trackingId) {
-          query.trackingId = trackingId;
-        }
+        if (deliveryStatus) query.deliveryStatus = deliveryStatus;
+        if (trackingId) query.trackingId = trackingId;
 
         const cursor = parcelsCollection
           .find(query)
@@ -298,7 +381,7 @@ async function run() {
         const totalParcels = await parcelsCollection.countDocuments(query);
         res.send({ parcels: result, totalParcels });
       } catch (error) {
-        console.error("Error fetching parcels", error);
+        console.error("Error fetching parcels:", error.message);
         res.status(500).send({ message: "internal server error" });
       }
     });
@@ -332,7 +415,7 @@ async function run() {
 
         res.send({ parcels: result, totalParcels });
       } catch (error) {
-        console.error("Error fetching parcels", error);
+        console.error("Error fetching admin parcels:", error.message);
         res.status(500).send({ message: "internal server error" });
       }
     });
@@ -349,10 +432,7 @@ async function run() {
 
         const query = {};
 
-        // rider filter
-        if (riderEmail) {
-          query.riderEmail = riderEmail;
-        }
+        if (riderEmail) query.riderEmail = riderEmail;
 
         if (deliveryStatus) {
           query.deliveryStatus = {
@@ -366,7 +446,6 @@ async function run() {
           };
         }
 
-        // search filter
         if (search) {
           query.$or = [
             { parcelName: { $regex: search, $options: "i" } },
@@ -385,12 +464,10 @@ async function run() {
         const totalAssignedDeliveries =
           await parcelsCollection.countDocuments(query);
 
-        res.send({
-          parcels: result,
-          totalAssignedDeliveries,
-        });
+        res.send({ parcels: result, totalAssignedDeliveries });
       } catch (error) {
-        res.status(500).send({ message: "Server error", error });
+        console.error("Error fetching rider parcels:", error.message);
+        res.status(500).send({ message: "Server error", error: error.message });
       }
     });
 
@@ -406,18 +483,12 @@ async function run() {
 
         const query = {};
 
-        // rider filter
-        if (riderEmail) {
-          query.riderEmail = riderEmail;
-        }
+        if (riderEmail) query.riderEmail = riderEmail;
 
         if (deliveryStatus) {
-          query.deliveryStatus = {
-            $in: ["delivered"],
-          };
+          query.deliveryStatus = { $in: ["delivered"] };
         }
 
-        // search filter
         if (search) {
           query.$or = [
             { parcelName: { $regex: search, $options: "i" } },
@@ -436,109 +507,110 @@ async function run() {
         const totalCompletedDeliveries =
           await parcelsCollection.countDocuments(query);
 
-        res.send({
-          parcels: result,
-          totalCompletedDeliveries,
-        });
+        res.send({ parcels: result, totalCompletedDeliveries });
       } catch (error) {
-        res.status(500).send({ message: "Server error", error });
+        console.error("Error fetching completed deliveries:", error.message);
+        res.status(500).send({ message: "Server error", error: error.message });
       }
     });
 
     app.get("/parcels/:id", async (req, res) => {
-      const id = req.params.id;
-      const query = { _id: new ObjectId(id) };
-      const result = await parcelsCollection.findOne(query);
-      res.send(result);
+      try {
+        const id = req.params.id;
+        const query = { _id: new ObjectId(id) };
+        const result = await parcelsCollection.findOne(query);
+        res.send(result);
+      } catch (error) {
+        console.error("Error fetching parcel by id:", error.message);
+        res.status(500).send({ message: "internal server error" });
+      }
     });
 
     app.post("/parcels", async (req, res) => {
-      const newParcel = req.body;
+      try {
+        const newParcel = req.body;
+        const trackingId = generateTrackingId();
 
-      const trackingId = generateTrackingId();
+        newParcel.trackingId = trackingId;
+        newParcel.deliveryStatus = "parcel_created";
 
-      newParcel.trackingId = trackingId;
-      newParcel.deliveryStatus = "parcel_created";
+        const result = await parcelsCollection.insertOne(newParcel);
 
-      const result = await parcelsCollection.insertOne(newParcel);
+        await trackingsCollection.insertOne({
+          trackingId,
+          status: "parcel_created",
+          details: "Parcel created",
+          createdAt: new Date(),
+        });
 
-      await trackingsCollection.insertOne({
-        trackingId,
-        status: "parcel_created",
-        details: "Parcel created",
-        createdAt: new Date(),
-      });
-
-      res.send({
-        success: true,
-        trackingId,
-        result,
-      });
+        res.send({ success: true, trackingId, result });
+      } catch (error) {
+        console.error("Error creating parcel:", error.message);
+        res.status(500).send({ message: "internal server error" });
+      }
     });
 
     app.patch("/parcels/:id/status", async (req, res) => {
-      const { deliveryStatus, riderId, trackingId } = req.body;
-      const id = req.params.id;
-      const filter = { _id: new ObjectId(id) };
-      const update = {
-        $set: {
-          deliveryStatus,
-        },
-      };
+      try {
+        const { deliveryStatus, riderId, trackingId } = req.body;
+        const id = req.params.id;
+        const filter = { _id: new ObjectId(id) };
+        const update = { $set: { deliveryStatus } };
 
-      if (deliveryStatus === "pending_pickup") {
-        // free rider
-        await ridersCollection.updateOne(
-          { _id: new ObjectId(riderId) },
-          {
-            $set: {
-              workStatus: "available",
-            },
-          },
-        );
+        if (deliveryStatus === "pending_pickup" && riderId) {
+          await ridersCollection.updateOne(
+            { _id: new ObjectId(riderId) },
+            { $set: { workStatus: "available" } },
+          );
+        }
+
+        if (deliveryStatus === "delivered" && riderId) {
+          await ridersCollection.updateOne(
+            { _id: new ObjectId(riderId) },
+            { $set: { workStatus: "available" } },
+          );
+        }
+
+        await logTracking(trackingId, deliveryStatus);
+
+        const result = await parcelsCollection.updateOne(filter, update);
+        res.send(result);
+      } catch (error) {
+        console.error("Error updating parcel status:", error.message);
+        res.status(500).send({ message: "internal server error" });
       }
-
-      if (deliveryStatus === "delivered") {
-        const filter = { _id: new ObjectId(riderId) };
-        const update = {
-          $set: {
-            workStatus: "available",
-          },
-        };
-        const result = await ridersCollection.updateOne(filter, update);
-      }
-
-      logTracking(trackingId, deliveryStatus);
-
-      const result = await parcelsCollection.updateOne(filter, update);
-      res.send(result);
     });
 
     // UPDATE PARCEL INFO
     app.patch("/parcels/:id", async (req, res) => {
-      const {
-        receiverName,
-        receiverEmail,
-        receiverPhone,
-        receiverAddress,
-        receiverDistrict,
-        deliveryInstructions,
-      } = req.body;
-      const id = req.params.id;
-      const filter = { _id: new ObjectId(id) };
-      const update = {
-        $set: {
+      try {
+        const {
           receiverName,
           receiverEmail,
           receiverPhone,
           receiverAddress,
           receiverDistrict,
           deliveryInstructions,
-        },
-      };
+        } = req.body;
+        const id = req.params.id;
+        const filter = { _id: new ObjectId(id) };
+        const update = {
+          $set: {
+            receiverName,
+            receiverEmail,
+            receiverPhone,
+            receiverAddress,
+            receiverDistrict,
+            deliveryInstructions,
+          },
+        };
 
-      const result = await parcelsCollection.updateOne(filter, update);
-      res.send(result);
+        const result = await parcelsCollection.updateOne(filter, update);
+        res.send(result);
+      } catch (error) {
+        console.error("Error updating parcel:", error.message);
+        res.status(500).send({ message: "internal server error" });
+      }
     });
 
     // UPDATE PARCEL INFO WITH RIDER INFO:
@@ -549,7 +621,6 @@ async function run() {
         const id = req.params.id;
 
         const filter = { _id: new ObjectId(id) };
-
         const update = {
           $set: {
             riderId,
@@ -563,42 +634,42 @@ async function run() {
         const parcelResult = await parcelsCollection.updateOne(filter, update);
 
         const riderQuery = { _id: new ObjectId(riderId) };
-
-        const updateRider = {
-          $set: { workStatus: "in_delivery" },
-        };
-
+        const updateRider = { $set: { workStatus: "in_delivery" } };
         const riderResult = await ridersCollection.updateOne(
           riderQuery,
           updateRider,
         );
 
-        logTracking(trackingId, "driver_assigned");
+        await logTracking(trackingId, "driver_assigned");
 
-        return res.send({
-          parcelResult,
-          riderResult,
-        });
+        return res.send({ parcelResult, riderResult });
       } catch (error) {
-        return res.status(500).send({ message: "Server error", error });
+        console.error("Error assigning rider:", error.message);
+        return res
+          .status(500)
+          .send({ message: "Server error", error: error.message });
       }
     });
 
     // RIDER REQUEST FOR PAYOUT
     app.patch("/parcels/:id/request-payout", async (req, res) => {
-      const { payoutAmount } = req.body;
-      const id = req.params.id;
-      const filter = { _id: new ObjectId(id) };
-      const update = {
-        $set: {
-          payoutAmount,
-          payoutStatus: "paid",
-          payoutRequestedAt: new Date(),
-        },
-      };
-      const result = await parcelsCollection.updateOne(filter, update);
-
-      res.send(result);
+      try {
+        const { payoutAmount } = req.body;
+        const id = req.params.id;
+        const filter = { _id: new ObjectId(id) };
+        const update = {
+          $set: {
+            payoutAmount,
+            payoutStatus: "paid",
+            payoutRequestedAt: new Date(),
+          },
+        };
+        const result = await parcelsCollection.updateOne(filter, update);
+        res.send(result);
+      } catch (error) {
+        console.error("Error requesting payout:", error.message);
+        res.status(500).send({ message: "internal server error" });
+      }
     });
 
     app.get("/rider-payments", async (req, res) => {
@@ -610,7 +681,6 @@ async function run() {
           payoutStatus: { $exists: true },
         };
 
-        // SEARCH LOGIC
         if (search) {
           query.$or = [
             { parcelName: { $regex: search, $options: "i" } },
@@ -622,7 +692,6 @@ async function run() {
         const skipNumber = parseInt(skip);
         const limitNumber = parseInt(limit);
 
-        // DATA QUERY (PAGINATION APPLIED)
         const parcels = await parcelsCollection
           .find(query)
           .sort({ payoutRequestedAt: -1 })
@@ -630,24 +699,25 @@ async function run() {
           .limit(limitNumber)
           .toArray();
 
-        // TOTAL COUNT (for pagination)
         const totalPayments = await parcelsCollection.countDocuments(query);
 
-        res.send({
-          parcels,
-          totalPayments,
-        });
+        res.send({ parcels, totalPayments });
       } catch (error) {
-        console.error(error);
+        console.error("Error fetching rider payments:", error.message);
         res.status(500).send({ message: "Server error" });
       }
     });
 
     app.delete("/parcels/:id", async (req, res) => {
-      const id = req.params.id;
-      const query = { _id: new ObjectId(id) };
-      const result = await parcelsCollection.deleteOne(query);
-      res.send(result);
+      try {
+        const id = req.params.id;
+        const query = { _id: new ObjectId(id) };
+        const result = await parcelsCollection.deleteOne(query);
+        res.send(result);
+      } catch (error) {
+        console.error("Error deleting parcel:", error.message);
+        res.status(500).send({ message: "internal server error" });
+      }
     });
 
     /* -------------------------------------------------------------------------- */
@@ -656,40 +726,56 @@ async function run() {
     Stripe Payment Api
     ================================== */
 
-    // NEW STRIPE API
     app.post("/create-checkout-session", async (req, res) => {
-      const parcelInfo = req.body;
-      const amount = parseInt(parcelInfo.cost) * 100;
-      const session = await stripe.checkout.sessions.create({
-        line_items: [
-          {
-            price_data: {
-              currency: "BDT",
-              unit_amount: amount,
-              product_data: {
-                name: parcelInfo.parcelName,
-              },
-            },
-            quantity: 1,
-          },
-        ],
-        metadata: {
-          parcelId: parcelInfo.parcelId,
-          parcelName: parcelInfo.parcelName,
-          trackingId: parcelInfo.trackingId,
-          senderName: parcelInfo.senderName,
-        },
-        customer_email: parcelInfo.senderEmail,
-        mode: "payment",
-        success_url: `${process.env.SITE_DOMAIN}/dashboard/payment-success?session_id={CHECKOUT_SESSION_ID}`,
-        cancel_url: `${process.env.SITE_DOMAIN}/dashboard/payment-cancel`,
-      });
+      try {
+        if (!stripe) {
+          return res
+            .status(500)
+            .send({ message: "Payment service not configured" });
+        }
 
-      res.send({ url: session.url });
+        const parcelInfo = req.body;
+        const amount = parseInt(parcelInfo.cost) * 100;
+        const session = await stripe.checkout.sessions.create({
+          line_items: [
+            {
+              price_data: {
+                currency: "BDT",
+                unit_amount: amount,
+                product_data: {
+                  name: parcelInfo.parcelName,
+                },
+              },
+              quantity: 1,
+            },
+          ],
+          metadata: {
+            parcelId: parcelInfo.parcelId,
+            parcelName: parcelInfo.parcelName,
+            trackingId: parcelInfo.trackingId,
+            senderName: parcelInfo.senderName,
+          },
+          customer_email: parcelInfo.senderEmail,
+          mode: "payment",
+          success_url: `${process.env.SITE_DOMAIN}/dashboard/payment-success?session_id={CHECKOUT_SESSION_ID}`,
+          cancel_url: `${process.env.SITE_DOMAIN}/dashboard/payment-cancel`,
+        });
+
+        res.send({ url: session.url });
+      } catch (error) {
+        console.error("Stripe checkout error:", error.message);
+        res.status(500).send({ message: "Payment session creation failed" });
+      }
     });
 
     app.patch("/payment-success", async (req, res) => {
       try {
+        if (!stripe) {
+          return res
+            .status(500)
+            .send({ message: "Payment service not configured" });
+        }
+
         const sessionId = req.query.session_id;
         if (!sessionId) {
           return res.send({
@@ -708,9 +794,7 @@ async function run() {
 
         const transactionId = session.payment_intent;
 
-        const paymentExist = await paymentsCollection.findOne({
-          transactionId,
-        });
+        const paymentExist = await paymentsCollection.findOne({ transactionId });
 
         if (paymentExist) {
           return res.send({
@@ -753,7 +837,7 @@ async function run() {
         };
         const parcelResult = await parcelsCollection.updateOne(query, update);
 
-        logTracking(trackingId, "pending_pickup");
+        await logTracking(trackingId, "pending_pickup");
 
         return res.send({
           success: true,
@@ -763,7 +847,7 @@ async function run() {
           paymentResult,
         });
       } catch (error) {
-        console.error("Server Error:", error);
+        console.error("Payment-success error:", error.message);
         return res.status(500).send({ message: "Internal Server Error" });
       }
     });
@@ -776,42 +860,16 @@ async function run() {
 
     // FOR USERS
     app.get("/payments", verifyFBToken, async (req, res) => {
-      const query = {};
-      const { email, search, skip = 0, limit = 0 } = req.query;
-
-      if (email) {
-        query.senderEmail = email;
-        if (email !== req.user.email) {
-          return res.status(403).send({ message: "forbidden access" });
-        }
-      }
-
-      if (search) {
-        query.$or = [
-          { parcelName: { $regex: search, $options: "i" } },
-          { senderName: { $regex: search, $options: "i" } },
-          { receiverName: { $regex: search, $options: "i" } },
-          { senderEmail: { $regex: search, $options: "i" } },
-          { receiverEmail: { $regex: search, $options: "i" } },
-        ];
-      }
-
-      const result = await paymentsCollection
-        .find(query)
-        .limit(Number(limit))
-        .skip(Number(skip))
-        .sort({ paidAt: -1 })
-        .toArray();
-      const totalPayments = await paymentsCollection.countDocuments(query);
-
-      res.send({ payments: result, totalPayments });
-    });
-
-    // FOR ADMIN
-    app.get("/admin/payments", verifyFBToken, verifyAdmin, async (req, res) => {
       try {
-        const { skip = 0, limit = 0, search = "" } = req.query;
         const query = {};
+        const { email, search, skip = 0, limit = 0 } = req.query;
+
+        if (email) {
+          query.senderEmail = email;
+          if (email !== req.user.email) {
+            return res.status(403).send({ message: "forbidden access" });
+          }
+        }
 
         if (search) {
           query.$or = [
@@ -833,10 +891,46 @@ async function run() {
 
         res.send({ payments: result, totalPayments });
       } catch (error) {
-        console.error("Error fetching payments", error);
+        console.error("Error fetching payments:", error.message);
         res.status(500).send({ message: "internal server error" });
       }
     });
+
+    // FOR ADMIN
+    app.get(
+      "/admin/payments",
+      verifyFBToken,
+      verifyAdmin,
+      async (req, res) => {
+        try {
+          const { skip = 0, limit = 0, search = "" } = req.query;
+          const query = {};
+
+          if (search) {
+            query.$or = [
+              { parcelName: { $regex: search, $options: "i" } },
+              { senderName: { $regex: search, $options: "i" } },
+              { receiverName: { $regex: search, $options: "i" } },
+              { senderEmail: { $regex: search, $options: "i" } },
+              { receiverEmail: { $regex: search, $options: "i" } },
+            ];
+          }
+
+          const result = await paymentsCollection
+            .find(query)
+            .limit(Number(limit))
+            .skip(Number(skip))
+            .sort({ paidAt: -1 })
+            .toArray();
+          const totalPayments = await paymentsCollection.countDocuments(query);
+
+          res.send({ payments: result, totalPayments });
+        } catch (error) {
+          console.error("Error fetching admin payments:", error.message);
+          res.status(500).send({ message: "internal server error" });
+        }
+      },
+    );
 
     /* -------------------------------------------------------------------------- */
 
@@ -876,69 +970,72 @@ async function run() {
 
         res.send({ riders: result, totalRiders });
       } catch (error) {
-        console.error("Error fetching riders", error);
+        console.error("Error fetching riders:", error.message);
         res.status(500).send({ message: "internal server error" });
       }
     });
 
-    app.patch("/riders/:id", verifyFBToken, verifyAdmin, async (req, res) => {
-      const status = req.body.status;
-      const id = req.params.id;
-      const query = { _id: new ObjectId(id) };
-      let update = {
-        $set: {
-          status,
-        },
-      };
+    app.patch(
+      "/riders/:id",
+      verifyFBToken,
+      verifyAdmin,
+      async (req, res) => {
+        try {
+          const status = req.body.status;
+          const id = req.params.id;
+          const query = { _id: new ObjectId(id) };
+          let update = { $set: { status } };
 
-      if (status === "approved") {
-        update.$set.workStatus = "available";
-      }
+          if (status === "approved") {
+            update.$set.workStatus = "available";
+          }
 
-      if (status === "rejected") {
-        update.$set.workStatus = "rejected";
-      }
+          if (status === "rejected") {
+            update.$set.workStatus = "rejected";
+          }
 
-      const result = await ridersCollection.updateOne(query, update);
+          const result = await ridersCollection.updateOne(query, update);
 
-      if (status === "approved") {
-        const email = req.body.email;
-        const query = { userEmail: email };
-        const update = {
-          $set: {
-            role: "rider",
-          },
-        };
-        const userResult = await usersCollection.updateOne(query, update);
-      }
+          if (status === "approved" || status === "rejected") {
+            const email = req.body.email;
+            const userQuery = { userEmail: email };
+            const userUpdate = {
+              $set: { role: status === "approved" ? "rider" : "user" },
+            };
+            await usersCollection.updateOne(userQuery, userUpdate);
+          }
 
-      if (status === "rejected") {
-        const email = req.body.email;
-        const query = { userEmail: email };
-        const update = {
-          $set: {
-            role: "user",
-          },
-        };
-        const userResult = await usersCollection.updateOne(query, update);
-      }
-
-      res.send(result);
-    });
+          res.send(result);
+        } catch (error) {
+          console.error("Error updating rider status:", error.message);
+          res.status(500).send({ message: "internal server error" });
+        }
+      },
+    );
 
     app.post("/riders", async (req, res) => {
-      const newRider = req.body;
-      newRider.status = "pending";
-      newRider.createdAt = new Date().toISOString();
-      const result = await ridersCollection.insertOne(newRider);
-      res.send(result);
+      try {
+        const newRider = req.body;
+        newRider.status = "pending";
+        newRider.createdAt = new Date().toISOString();
+        const result = await ridersCollection.insertOne(newRider);
+        res.send(result);
+      } catch (error) {
+        console.error("Error creating rider:", error.message);
+        res.status(500).send({ message: "internal server error" });
+      }
     });
 
     app.delete("/riders/:id", async (req, res) => {
-      const id = req.params.id;
-      const query = { _id: new ObjectId(id) };
-      const result = await ridersCollection.deleteOne(query);
-      res.send(result);
+      try {
+        const id = req.params.id;
+        const query = { _id: new ObjectId(id) };
+        const result = await ridersCollection.deleteOne(query);
+        res.send(result);
+      } catch (error) {
+        console.error("Error deleting rider:", error.message);
+        res.status(500).send({ message: "internal server error" });
+      }
     });
 
     /* ==================================
@@ -948,9 +1045,7 @@ async function run() {
       try {
         const { trackingId } = req.params;
 
-        const parcel = await parcelsCollection.findOne({
-          trackingId,
-        });
+        const parcel = await parcelsCollection.findOne({ trackingId });
 
         if (!parcel) {
           return res.status(404).send({
@@ -964,17 +1059,10 @@ async function run() {
           .sort({ createdAt: 1 })
           .toArray();
 
-        res.send({
-          success: true,
-          parcel,
-          history,
-        });
+        res.send({ success: true, parcel, history });
       } catch (error) {
-        console.error(error);
-        res.status(500).send({
-          success: false,
-          message: "Server error",
-        });
+        console.error("Parcel track error:", error.message);
+        res.status(500).send({ success: false, message: "Server error" });
       }
     });
 
@@ -985,17 +1073,38 @@ async function run() {
       res.status(404).json({ status: 404, message: "API not found" });
     });
 
-    console.log("✅ MongoDB connected successfully");
+    /* ==============================
+    GLOBAL ERROR HANDLER
+    ============================== */
+    app.use((err, req, res, next) => {
+      console.error("Unhandled error:", err.message);
+      res.status(500).json({ status: 500, message: "Internal Server Error" });
+    });
   } catch (err) {
-    console.error(err);
+    console.error("❌ Failed to connect to MongoDB:", err.message);
+
+    // Register fallback error route so Vercel doesn't get a blank 500
+    app.use((req, res) => {
+      res
+        .status(503)
+        .json({ status: 503, message: "Service temporarily unavailable. Database connection failed." });
+    });
   }
 }
 
 run();
 
 /* ==============================
-SERVER START
+SERVER START (local development only — Vercel ignores this)
 ============================== */
-app.listen(port, () => {
-  console.log(`🚀 Server running on port ${port}`);
-});
+// Only call app.listen when NOT in a serverless environment
+if (process.env.NODE_ENV !== "production" || process.env.IS_LOCAL === "true") {
+  app.listen(port, () => {
+    console.log(`🚀 Server running on port ${port}`);
+  });
+}
+
+/* ==============================
+EXPORT FOR VERCEL SERVERLESS
+============================== */
+module.exports = app;
