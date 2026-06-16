@@ -37,9 +37,62 @@ app.get("/", (req, res) => {
   });
 });
 
-// Secondary health-check used by monitoring tools
-app.get("/health", (req, res) => {
-  res.status(200).json({ status: "ok", uptime: process.uptime() });
+// Secondary health-check: attempts a live DB ping
+app.get("/health", async (req, res) => {
+  const dbStatus = { connected: false, error: null };
+  try {
+    await connectToDatabase();
+    dbStatus.connected = true;
+  } catch (e) {
+    dbStatus.error = e.message;
+  }
+  const code = dbStatus.connected ? 200 : 503;
+  res.status(code).json({
+    status: dbStatus.connected ? "ok" : "degraded",
+    uptime: process.uptime(),
+    database: dbStatus,
+    env: {
+      DB_URI_set: !!process.env.DB_URI,
+      FB_SERVICE_KEY_set: !!process.env.FB_SERVICE_KEY,
+      STRIPE_SECRET_KEY_set: !!process.env.STRIPE_SECRET_KEY,
+      SITE_DOMAIN: process.env.SITE_DOMAIN || "(not set)",
+      NODE_ENV: process.env.NODE_ENV || "(not set)",
+    },
+  });
+});
+
+// Debug endpoint: shows the exact error preventing DB connection
+app.get("/debug", async (req, res) => {
+  const info = {
+    DB_URI_set: !!process.env.DB_URI,
+    // Show a masked version so you can confirm the URI is loaded without exposing credentials
+    DB_URI_prefix: process.env.DB_URI
+      ? process.env.DB_URI.substring(0, 30) + "..."
+      : "NOT SET",
+    FB_SERVICE_KEY_set: !!process.env.FB_SERVICE_KEY,
+    STRIPE_SECRET_KEY_set: !!process.env.STRIPE_SECRET_KEY,
+    NODE_ENV: process.env.NODE_ENV || "(not set)",
+  };
+
+  try {
+    await connectToDatabase();
+    return res.status(200).json({ status: "ok", message: "DB connected", env: info });
+  } catch (err) {
+    return res.status(503).json({
+      status: "error",
+      message: err.message,
+      errorName: err.name,
+      errorCode: err.code,
+      codeName: err.codeName,
+      env: info,
+      fix: [
+        "1. MongoDB Atlas → Network Access → Add IP 0.0.0.0/0",
+        "2. Vercel Dashboard → Settings → Environment Variables → confirm DB_URI is set",
+        "3. Use mongodb+srv:// format in DB_URI (not the old direct shard address)",
+        "4. Atlas free-tier: check your cluster is not paused",
+      ],
+    });
+  }
 });
 
 /* ==============================
@@ -157,21 +210,21 @@ async function connectToDatabase() {
   console.log("⏳ Connecting to MongoDB...");
 
   const client = new MongoClient(uri, {
-    // DO NOT use strict: true — it rejects many valid MongoDB operations
+    // serverApi strict mode disabled — strict:true rejects find/sort/skip used throughout
     serverApi: {
       version: ServerApiVersion.v1,
       strict: false,
       deprecationErrors: false,
     },
-    // Serverless-optimised pool — keep only 1 connection alive per instance
+    // Serverless-optimised pool settings
     maxPoolSize: 10,
     minPoolSize: 0,
     maxIdleTimeMS: 30000,
     serverSelectionTimeoutMS: 15000,
     connectTimeoutMS: 15000,
     socketTimeoutMS: 60000,
-    // Required for Atlas TLS (applies to both srv and legacy URIs)
-    tls: true,
+    // NOTE: Do NOT set tls:true here if your URI already contains ssl=true or mongodb+srv://
+    // Setting both causes TLS negotiation conflicts on Atlas
   });
 
   try {
@@ -1124,16 +1177,21 @@ async function run() {
       "   4. Confirm cluster is not paused (Atlas free-tier pauses after inactivity)",
     );
 
-    // Register fallback so Vercel returns JSON instead of a blank 500
+    // Register fallback so every request returns a useful JSON error (not blank 500)
     app.use((req, res) => {
       res.status(503).json({
         status: 503,
         message: "Database connection failed. Service temporarily unavailable.",
-        // Show hint in non-production to help debug; hide in prod
-        hint:
-          process.env.NODE_ENV !== "production"
-            ? err.message
-            : "Check Vercel function logs for details.",
+        // Always expose the real error — needed to diagnose the issue
+        error: err.message,
+        errorName: err.name,
+        fix: [
+          "1. MongoDB Atlas → Network Access → Add IP 0.0.0.0/0 (Allow Anywhere)",
+          "2. Vercel → Settings → Environment Variables → confirm DB_URI is set",
+          "3. Use mongodb+srv:// URI format in Vercel (not direct shard addresses)",
+          "4. Check if Atlas free-tier cluster is paused",
+        ],
+        debug: "/debug endpoint shows full diagnostics",
       });
     });
   }
