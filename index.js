@@ -1,20 +1,12 @@
 /* ==============================
-CORE IMPORTS & ENV CONFIG
+CORE IMPORTS
 ============================== */
 const express = require("express");
 const cors = require("cors");
+require("dotenv").config();
+const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 const admin = require("firebase-admin");
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
-
-require("dotenv").config();
-
-const stripeSecretKey = process.env.STRIPE_SECRET_KEY;
-if (!stripeSecretKey) {
-  console.error(
-    "❌ CRITICAL ERROR: STRIPE_SECRET_KEY is missing from environment variables!",
-  );
-}
-const stripe = require("stripe")(stripeSecretKey || "");
 
 /* ==============================
 APP INIT
@@ -31,26 +23,15 @@ app.use(express.json());
 /* ==============================
 FIREBASE CONFIG
 ============================== */
-if (!admin.apps.length) {
-  try {
-    if (process.env.FB_SERVICE_KEY) {
-      const decoded = Buffer.from(
-        process.env.FB_SERVICE_KEY,
-        "base64",
-      ).toString("utf8");
-      const serviceAccount = JSON.parse(decoded);
+// const serviceAccount = require("./serviceAccountKey.json");
+const decoded = Buffer.from(process.env.FB_SERVICE_KEY, "base64").toString(
+  "utf8",
+);
+const serviceAccount = JSON.parse(decoded);
 
-      admin.initializeApp({
-        credential: admin.credential.cert(serviceAccount),
-      });
-      console.log("🚀 Firebase Admin Initialized Successfully.");
-    } else {
-      console.error("❌ CRITICAL ERROR: FB_SERVICE_KEY is missing!");
-    }
-  } catch (error) {
-    console.error("❌ Firebase Admin Initialization Failed:", error.message);
-  }
-}
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount),
+});
 
 /* ==============================
 CUSTOM MIDDLEWARE
@@ -71,7 +52,7 @@ const verifyFBToken = async (req, res, next) => {
     req.user = decoded;
     next();
   } catch (error) {
-    console.error("Firebase token error:", error); // বানানের টাইপো (toker -> token) ঠিক করা হয়েছে
+    console.error("Firebase toker error:", error);
     res.status(401).send({ message: "unauthorized access" });
   }
 };
@@ -81,6 +62,7 @@ CUSTOM FUNCTION
 ================================== */
 const generateTrackingId = () => {
   const prefix = "ZAP";
+
   const timestamp = Date.now().toString(36);
   const random = Math.random().toString(36).substring(2, 6).toUpperCase();
 
@@ -92,13 +74,7 @@ DATABASE CONFIG
 ============================== */
 const uri = process.env.DB_URI;
 
-if (!uri) {
-  console.error(
-    "❌ CRITICAL ERROR: DB_URI is missing from environment variables!",
-  );
-}
-
-const client = new MongoClient(uri || "", {
+const client = new MongoClient(uri, {
   serverApi: {
     version: ServerApiVersion.v1,
     strict: true,
