@@ -231,7 +231,7 @@ async function run() {
 
     app.post("/users", async (req, res) => {
       const newUser = req.body;
-      const { userEmail } = req.body; // userEmail = mongoDB Key
+      const { userEmail } = req.body;
       const query = { userEmail };
       const existingUser = await usersCollection.findOne(query);
 
@@ -240,8 +240,6 @@ async function run() {
       const result = await usersCollection.insertOne(newUser);
       res.send(result);
     });
-
-    // app.patch("/users/:id", async (req, res) => {});
 
     app.delete("/users/:id", async (req, res) => {
       const id = req.params.id;
