@@ -87,7 +87,7 @@ ROUTES + DB CONNECTION
 ============================== */
 async function run() {
   try {
-    await client.connect();
+    // await client.connect();
 
     /* ==============================
     DATABASE
