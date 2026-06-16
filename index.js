@@ -124,44 +124,75 @@ const generateTrackingId = () => {
 };
 
 /* ==============================
-DATABASE CONFIG (with connection caching for serverless)
+DATABASE CONFIG (connection caching for serverless)
 ============================== */
+
+// Support both SRV and legacy URI formats.
+// In Vercel dashboard, set DB_URI to your mongodb+srv:// connection string.
 const uri = process.env.DB_URI;
 
 let cachedClient = null;
 let cachedDb = null;
 
 async function connectToDatabase() {
-  // Return cached connection if available (critical for serverless cold-start performance)
+  // Reuse existing connection across warm serverless invocations
   if (cachedClient && cachedDb) {
-    return { client: cachedClient, db: cachedDb };
+    try {
+      // Ping to confirm the cached connection is still alive
+      await cachedClient.db("admin").command({ ping: 1 });
+      return { client: cachedClient, db: cachedDb };
+    } catch (_) {
+      // Connection dropped — clear cache and reconnect below
+      cachedClient = null;
+      cachedDb = null;
+    }
   }
 
   if (!uri) {
-    throw new Error("DB_URI environment variable is not set.");
+    throw new Error(
+      "DB_URI environment variable is not set. Add it in Vercel Project Settings → Environment Variables.",
+    );
   }
 
+  console.log("⏳ Connecting to MongoDB...");
+
   const client = new MongoClient(uri, {
+    // DO NOT use strict: true — it rejects many valid MongoDB operations
     serverApi: {
       version: ServerApiVersion.v1,
-      strict: true,
-      deprecationErrors: true,
+      strict: false,
+      deprecationErrors: false,
     },
-    // Serverless-friendly connection pool settings
-    maxPoolSize: 1,
+    // Serverless-optimised pool — keep only 1 connection alive per instance
+    maxPoolSize: 10,
     minPoolSize: 0,
-    maxIdleTimeMS: 10000,
-    serverSelectionTimeoutMS: 10000,
-    connectTimeoutMS: 10000,
-    socketTimeoutMS: 45000,
+    maxIdleTimeMS: 30000,
+    serverSelectionTimeoutMS: 15000,
+    connectTimeoutMS: 15000,
+    socketTimeoutMS: 60000,
+    // Required for Atlas TLS (applies to both srv and legacy URIs)
+    tls: true,
   });
 
-  await client.connect();
+  try {
+    await client.connect();
+    // Verify the connection works before caching it
+    await client.db("admin").command({ ping: 1 });
+  } catch (err) {
+    // Log the full error details to Vercel function logs
+    console.error("❌ MongoDB connection failed:");
+    console.error("   Error name   :", err.name);
+    console.error("   Error message:", err.message);
+    console.error("   Error code   :", err.code);
+    console.error("   Codename     :", err.codeName);
+    // Re-throw so the run() catch block handles it
+    throw err;
+  }
 
   cachedClient = client;
   cachedDb = client.db("zapShitDB");
 
-  console.log("✅ MongoDB connected successfully");
+  console.log("✅ MongoDB connected and verified");
   return { client: cachedClient, db: cachedDb };
 }
 
@@ -1081,13 +1112,29 @@ async function run() {
       res.status(500).json({ status: 500, message: "Internal Server Error" });
     });
   } catch (err) {
-    console.error("❌ Failed to connect to MongoDB:", err.message);
+    console.error("❌ Failed to connect to MongoDB:");
+    console.error("   Message :", err.message);
+    console.error("   Code    :", err.code);
+    console.error("   Name    :", err.name);
+    console.error(
+      "\n📋 Checklist to fix this:\n" +
+      "   1. Go to MongoDB Atlas → Network Access → Add IP: 0.0.0.0/0\n" +
+      "   2. Confirm DB_URI is set in Vercel → Settings → Environment Variables\n" +
+      "   3. Use mongodb+srv:// format (not direct shard addresses)\n" +
+      "   4. Confirm cluster is not paused (Atlas free-tier pauses after inactivity)",
+    );
 
-    // Register fallback error route so Vercel doesn't get a blank 500
+    // Register fallback so Vercel returns JSON instead of a blank 500
     app.use((req, res) => {
-      res
-        .status(503)
-        .json({ status: 503, message: "Service temporarily unavailable. Database connection failed." });
+      res.status(503).json({
+        status: 503,
+        message: "Database connection failed. Service temporarily unavailable.",
+        // Show hint in non-production to help debug; hide in prod
+        hint:
+          process.env.NODE_ENV !== "production"
+            ? err.message
+            : "Check Vercel function logs for details.",
+      });
     });
   }
 }
