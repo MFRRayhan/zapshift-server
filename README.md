@@ -44,13 +44,13 @@ ZapShift backend is the API layer for a parcel delivery platform. It handles use
 
 ## Required Environment Variables
 
-| Variable | Purpose |
-|---|---|
-| `DB_URI` | MongoDB connection string |
-| `PORT` | Server port (defaults to `4000`) |
-| `STRIPE_SECRET_KEY` | Stripe API secret |
-| `SITE_DOMAIN` | Frontend base URL used in payment callbacks |
-| `FB_SERVICE_KEY` | Base64-encoded Firebase service account JSON |
+| Variable            | Purpose                                      |
+| ------------------- | -------------------------------------------- |
+| `DB_URI`            | MongoDB connection string                    |
+| `PORT`              | Server port (defaults to `4000`)             |
+| `STRIPE_SECRET_KEY` | Stripe API secret                            |
+| `SITE_DOMAIN`       | Frontend base URL used in payment callbacks  |
+| `FB_SERVICE_KEY`    | Base64-encoded Firebase service account JSON |
 
 ## Core Features
 
